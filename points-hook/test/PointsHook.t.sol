@@ -132,4 +132,173 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
         );
         assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 2 * 10 ** 14);
     }
+
+    // ──────────────────────────────────────────────
+    // Referral logic tests
+    // ──────────────────────────────────────────────
+
+    function test_swapWithReferral() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+        address user = address(this);
+        address referrer = address(0xBEEF);
+
+        bytes memory hookData = abi.encode(user, referrer);
+
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 userPoints = hook.balanceOf(user, poolIdUint);
+        uint256 referrerPoints = hook.balanceOf(referrer, poolIdUint);
+
+        // User gets 20% of ETH spent = 0.001e18 / 5 = 2e14
+        assertEq(userPoints, 2 * 10 ** 14, "user should receive swap points");
+        // Referrer gets 25% of user's points = 2e14 / 4 = 5e13
+        assertEq(
+            referrerPoints,
+            5 * 10 ** 13,
+            "referrer should receive 25% bonus"
+        );
+    }
+
+    function test_selfReferralGivesNoBonus() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+        address user = address(this);
+
+        // User refers themselves — referrer == user
+        bytes memory hookData = abi.encode(user, user);
+
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 userPoints = hook.balanceOf(user, poolIdUint);
+        // User should only get swap points, no extra referral bonus
+        assertEq(
+            userPoints,
+            2 * 10 ** 14,
+            "self-referral should not mint bonus"
+        );
+    }
+
+    function test_noHookDataYieldsNoPoints() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            ZERO_BYTES
+        );
+
+        uint256 points = hook.balanceOf(address(this), poolIdUint);
+        assertEq(points, 0, "empty hookData should yield zero points");
+    }
+
+    function test_zeroAddressUserYieldsNoPoints() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        // Encode address(0) as user
+        bytes memory hookData = abi.encode(address(0));
+
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 points = hook.balanceOf(address(0), poolIdUint);
+        assertEq(points, 0, "zero-address user should receive no points");
+    }
+
+    function test_oneForZeroSwapYieldsNoPoints() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        // Approve tokens for the swap (selling TOKEN for ETH)
+        bytes memory hookData = abi.encode(address(this));
+
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false, // TOKEN -> ETH (not eligible)
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 points = hook.balanceOf(address(this), poolIdUint);
+        assertEq(points, 0, "selling TOKEN for ETH should yield no points");
+    }
+
+    function test_referralWithZeroAddressReferrer() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+        address user = address(this);
+
+        // Explicitly pass address(0) as referrer
+        bytes memory hookData = abi.encode(user, address(0));
+
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 userPoints = hook.balanceOf(user, poolIdUint);
+        uint256 referrerPoints = hook.balanceOf(address(0), poolIdUint);
+
+        assertEq(userPoints, 2 * 10 ** 14, "user should still get points");
+        assertEq(
+            referrerPoints,
+            0,
+            "zero-address referrer should get no bonus"
+        );
+    }
 }
